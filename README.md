@@ -1,6 +1,6 @@
-# cassiopeia
+# Cassiopeia
 
-
+a simple CLI tool to coordinate IoT backend.
 
 ## Description
 
