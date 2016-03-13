@@ -2,43 +2,44 @@ package command
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudformation"
+	"github.com/takipone/soracom-sdk-go"
 )
+
+const cfnStackName string = "Cassiopeia"
+const soracomName string = "Cassiopeia"
 
 type SetupCommand struct {
 	Meta
 }
 
-func (c *SetupCommand) Synopsis() string {
-	return "Initialize(Create) components"
-}
-func (c *SetupCommand) Help() string {
-	helpText := `
-
-`
-	return strings.TrimSpace(helpText)
-}
-
 func (c *SetupCommand) Run(args []string) int {
-	const cfnStackName string = "Cassiopeia"
-	const cfnTemplateURL string = "https://raw.githubusercontent.com/takipone/cassiopeia/master/resources/transit.template"
-
-	// Create Transit(Kinesis Stream and IAM Role by CloudFormation)
+	// Create CloudTransit(Kinesis Stream and IAM Role by CloudFormation)
 	svc := cloudformation.New(session.New(), &aws.Config{Region: aws.String("ap-northeast-1")})
-
-	params := &cloudformation.CreateStackInput{
-		StackName:    aws.String(cfnStackName),
-		Capabilities: []*string{aws.String("CAPABILITY_IAM")},
-		Parameters: []*cloudformation.Parameter{{
-			ParameterKey:     aws.String("ShardCount"),
-			ParameterValue:   aws.String("1"),
-			UsePreviousValue: aws.Bool(true),
-		}},
-		TemplateBody: aws.String(`
+	params := &cloudformation.DescribeStacksInput{
+		StackName: aws.String(cfnStackName),
+	}
+	resp, err := svc.DescribeStacks(params)
+	if err != nil {
+		fmt.Println(err.Error())
+		return 1
+	}
+	if len(resp.Stacks) == 0 {
+		params := &cloudformation.CreateStackInput{
+			StackName:    aws.String(cfnStackName),
+			Capabilities: []*string{aws.String("CAPABILITY_IAM")},
+			Parameters: []*cloudformation.Parameter{{
+				ParameterKey:     aws.String("ShardCount"),
+				ParameterValue:   aws.String("1"),
+				UsePreviousValue: aws.Bool(true),
+			}},
+			TemplateBody: aws.String(`
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Description": "Cassiopeia datastore and credentials stack",
@@ -125,14 +126,84 @@ func (c *SetupCommand) Run(args []string) int {
   }
 }
 `),
+		}
+		_, err = svc.CreateStack(params)
+		if err != nil {
+			fmt.Println(err.Error())
+			return 1
+		}
+		fmt.Print("CloudTransit creating.")
 	}
-	resp, err := svc.CreateStack(params)
 
-	if err != nil {
-		fmt.Println(err.Error())
+	ct := map[string]string{}
+	// Wait for the cloud transit has created.
+	for {
+		params := &cloudformation.DescribeStacksInput{
+			StackName: aws.String(cfnStackName),
+		}
+		resp, err := svc.DescribeStacks(params)
+		if err != nil {
+			fmt.Println(err.Error())
+			return 1
+		}
+		if *resp.Stacks[0].StackStatus == "CREATE_COMPLETE" {
+			for _, v := range resp.Stacks[0].Outputs {
+				ct[*v.OutputKey] = *v.OutputValue
+			}
+			break
+		}
+		fmt.Print(".")
+		time.Sleep(30 * time.Second)
+	}
+
+	// Set EdgeTransit
+	ac := soracom.NewAPIClient(nil)
+	email := os.Getenv("SORACOM_EMAIL")
+	password := os.Getenv("SORACOM_PASSWORD")
+	if email == "" {
+		fmt.Println("SORACOM_EMAIL env var is required")
 		return 1
 	}
-	fmt.Println(resp)
+	if password == "" {
+		fmt.Println("SORACOM_PASSWORD env var is required")
+		return 1
+	}
+
+	err = ac.Auth(email, password)
+	if err != nil {
+		fmt.Printf("auth err: %v\n", err.Error())
+		return 1
+	}
+
+	o := &soracom.CredentialOptions{
+		Type:        "aws-credentials",
+		Description: "Cassiopeia credential",
+		Credentials: soracom.Credentials{
+			AccessKeyId:     ct["EdgeTransitAccessKey"],
+			SecretAccessKey: ct["EdgeTransitSecretKey"],
+		},
+	}
+	cc, err := ac.CreateCredentialWithName(soracomName, o)
+	if err != nil {
+		fmt.Printf(err.Error())
+		return 1
+	}
+	fmt.Printf(cc.String())
 
 	return 0
+}
+
+func (c *SetupCommand) Synopsis() string {
+	return "Initialize(Create) components"
+}
+func (c *SetupCommand) Help() string {
+	helpText := `
+Usage: cas setup [options]
+
+	Initialize(Create) components.
+
+Options:
+
+`
+	return strings.TrimSpace(helpText)
 }
