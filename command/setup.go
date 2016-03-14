@@ -156,7 +156,7 @@ func (c *SetupCommand) Run(args []string) int {
 		time.Sleep(30 * time.Second)
 	}
 
-	// Set EdgeTransit
+	// Setup EdgeTransit
 	ac := soracom.NewAPIClient(nil)
 	email := os.Getenv("SORACOM_EMAIL")
 	password := os.Getenv("SORACOM_PASSWORD")
@@ -175,6 +175,7 @@ func (c *SetupCommand) Run(args []string) int {
 		return 1
 	}
 
+	// Set AWS Credential into SORACOM Credential.
 	o := &soracom.CredentialOptions{
 		Type:        "aws-credentials",
 		Description: "Cassiopeia credential",
@@ -183,12 +184,44 @@ func (c *SetupCommand) Run(args []string) int {
 			SecretAccessKey: ct["EdgeTransitSecretKey"],
 		},
 	}
-	cc, err := ac.CreateCredentialWithName(soracomName, o)
+	cr, err := ac.CreateCredentialWithName(soracomName, o)
 	if err != nil {
-		fmt.Printf(err.Error())
+		fmt.Println(err.Error())
 		return 1
 	}
-	fmt.Printf(cc.String())
+	fmt.Println("SORACOM Credential: " + cr.CredentialId + " created.")
+
+	g, err := ac.CreateGroupWithName(soracomName)
+	if err != nil {
+		fmt.Println(err.Error())
+		return 1
+	}
+	fmt.Println("SORACOM Group: " + soracomName + " created.")
+	gc := []soracom.GroupConfig{
+		{
+			Key:   "enabled",
+			Value: "true",
+		}, {
+			Key:   "credentialsId",
+			Value: cr.CredentialId,
+		}, {
+			Key: "destination",
+			Value: soracom.FunnelDestinationConfig{
+				Provider:    "aws",
+				Service:     "kinesis",
+				ResourceUrl: "https://kinesis.ap-northeast-1.amazonaws.com/" + ct["CloudTransit"],
+			},
+		}, {
+			Key:   "contentType",
+			Value: "",
+		},
+	}
+	_, err = ac.UpdateGroupConfigurations(g.GroupID, "SoracomFunnel", gc)
+	if err != nil {
+		fmt.Println(err.Error())
+		return 1
+	}
+	fmt.Println("update Group Configuration.")
 
 	return 0
 }
