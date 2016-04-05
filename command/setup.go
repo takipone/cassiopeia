@@ -15,6 +15,9 @@ import (
 
 const cfnStackName string = "Cassiopeia"
 const soracomName string = "Cassiopeia"
+const analyzerDockerImage string = "sebp/elk"
+const analyzerDockerImageTag string = "latest"
+const analyzerContainerName string = "cassiopeia_analyzer"
 
 type SetupCommand struct {
 	Meta
@@ -22,6 +25,8 @@ type SetupCommand struct {
 
 func (c *SetupCommand) Run(args []string) int {
 	// Create CloudTransit(Kinesis Stream and IAM Role by CloudFormation)
+	c.Ui.Output("Check or create cassiopeia components")
+
 	svc := cloudformation.New(session.New(), &aws.Config{Region: aws.String("ap-northeast-1")})
 	params := &cloudformation.ListStacksInput{
 		StackStatusFilter: []*string{
@@ -142,13 +147,13 @@ func (c *SetupCommand) Run(args []string) int {
 			c.Ui.Error(err.Error())
 			return 1
 		}
-		c.Ui.Info("CloudTransit creating.")
+		c.Ui.Info("-> CloudTransit creating.")
 	} else {
-		c.Ui.Info("CloudTransit already exists.")
+		c.Ui.Output("-> CloudTransit already exists.")
 	}
 
-	ct := map[string]string{}
 	// Wait for the cloud transit has created.
+	ct := map[string]string{}
 	for {
 		params := &cloudformation.DescribeStacksInput{
 			StackName: aws.String(cfnStackName),
@@ -164,7 +169,7 @@ func (c *SetupCommand) Run(args []string) int {
 			}
 			break
 		}
-		c.Ui.Info(".")
+		c.Ui.Info("-> .")
 		// fmt.Print(".")
 		time.Sleep(30 * time.Second)
 	}
@@ -188,36 +193,69 @@ func (c *SetupCommand) Run(args []string) int {
 		return 1
 	}
 
-	// Set AWS Credential into SORACOM Credential.
-	o := &soracom.CredentialOptions{
-		Type:        "aws-credentials",
-		Description: "Cassiopeia credential",
-		Credentials: soracom.Credentials{
-			AccessKeyId:     ct["EdgeTransitAccessKey"],
-			SecretAccessKey: ct["EdgeTransitSecretKey"],
-		},
-	}
-
-	cr, err := ac.CreateCredentialWithName(soracomName, o)
+	// Create SORACOM Credential if not exists.
+	creds, _, err := ac.ListCredentials()
 	if err != nil {
 		c.Ui.Error(err.Error())
 		return 1
 	}
-	c.Ui.Info("EdgeTransit(SORACOM) Credential: " + cr.CredentialId + " created.")
+	flag = false
+	var cred soracom.Credential
+	for _, value := range creds {
+		if value.CredentialId == soracomName {
+			cred = value
+			c.Ui.Output("-> EdgeTransit(SORACOM) Credential: already exists.")
+			flag = true
+			break
+		}
+	}
+	if !flag {
+		co := &soracom.CredentialOptions{
+			Type:        "aws-credentials",
+			Description: "Cassiopeia credential",
+			Credentials: soracom.Credentials{
+				AccessKeyId:     ct["EdgeTransitAccessKey"],
+				SecretAccessKey: ct["EdgeTransitSecretKey"],
+			},
+		}
+		cred, err := ac.CreateCredentialWithName(soracomName, co)
+		if err != nil {
+			c.Ui.Error(err.Error())
+			return 1
+		}
+		c.Ui.Info("-> EdgeTransit(SORACOM) Credential: " + cred.CredentialId + " created.")
+	}
 
-	g, err := ac.CreateGroupWithName(soracomName)
+	// Create SORACOM Group if not exists.
+	lgo := &soracom.ListGroupsOptions{
+		TagName:  "name",
+		TagValue: soracomName,
+	}
+	groups, _, err := ac.ListGroups(lgo)
 	if err != nil {
 		c.Ui.Error(err.Error())
 		return 1
 	}
-	c.Ui.Info("EdgeTransit(SORACOM) Configuration: " + soracomName + " created.")
+	var g *soracom.Group
+	if len(groups) == 0 {
+		g, err = ac.CreateGroupWithName(soracomName)
+		if err != nil {
+			c.Ui.Error(err.Error())
+			return 1
+		}
+		c.Ui.Info("-> EdgeTransit(SORACOM) Configuration: " + soracomName + " created.")
+	} else {
+		g = &groups[0]
+		c.Ui.Output("-> EdgeTransit(SORACOM) Configuration: already exists.")
+	}
+
 	gc := []soracom.GroupConfig{
 		{
 			Key:   "enabled",
 			Value: "true",
 		}, {
 			Key:   "credentialsId",
-			Value: cr.CredentialId,
+			Value: cred.CredentialId,
 		}, {
 			Key: "destination",
 			Value: soracom.FunnelDestinationConfig{
@@ -235,7 +273,7 @@ func (c *SetupCommand) Run(args []string) int {
 		c.Ui.Error(err.Error())
 		return 1
 	}
-	c.Ui.Info("EdgeTransit Configuration updated.")
+	c.Ui.Info("-> EdgeTransit Configuration updated.")
 
 	// Setup Analyzer(Local/Docker)
 	client, err := docker.NewClientFromEnv()
@@ -243,17 +281,88 @@ func (c *SetupCommand) Run(args []string) int {
 		c.Ui.Error(err.Error())
 		return 1
 	}
-	var buf bytes.Buffer
-	opts := docker.PullImageOptions{
-		Repository:   "sebp/elk",
-		Tag:          "latest",
-		OutputStream: &buf,
+
+	// Pull Docker image if not exists.
+	lio := docker.ListImagesOptions{
+		Filter: analyzerDockerImage,
 	}
-	err = client.PullImage(opts, docker.AuthConfiguration{})
+	images, err := client.ListImages(lio)
 	if err != nil {
 		c.Ui.Error(err.Error())
 		return 1
 	}
+	if len(images) == 0 {
+		var buf bytes.Buffer
+		opts := docker.PullImageOptions{
+			Repository:   analyzerDockerImage,
+			Tag:          analyzerDockerImageTag,
+			OutputStream: &buf,
+		}
+		err = client.PullImage(opts, docker.AuthConfiguration{})
+		if err != nil {
+			c.Ui.Error(err.Error())
+			return 1
+		}
+	} else {
+		c.Ui.Output("-> Analyzer docker image found.")
+	}
+	// Create and start container if not exists.
+	containers, err := client.ListContainers(docker.ListContainersOptions{All: false})
+	if err != nil {
+		c.Ui.Error(err.Error())
+		return 1
+	}
+	flag = false
+	for _, v := range containers {
+		if v.Names[0] == "/"+analyzerContainerName {
+			flag = true
+			break
+		}
+	}
+	if !flag {
+		cco := docker.CreateContainerOptions{
+			Name:   analyzerContainerName,
+			Config: &docker.Config{Image: analyzerDockerImage},
+		}
+		container, err := client.CreateContainer(cco)
+		portBindings := map[docker.Port][]docker.PortBinding{
+			"5000/tcp": {docker.PortBinding{HostIP: "0.0.0.0", HostPort: "5000"}},
+			"5044/tcp": {docker.PortBinding{HostIP: "0.0.0.0", HostPort: "5044"}},
+			"5601/tcp": {docker.PortBinding{HostIP: "0.0.0.0", HostPort: "5601"}},
+			"9200/tcp": {docker.PortBinding{HostIP: "0.0.0.0", HostPort: "9200"}},
+		}
+		hostConfig := docker.HostConfig{
+			PortBindings: portBindings,
+		}
+		err = client.StartContainer(container.ID, &hostConfig)
+		if err != nil {
+			c.Ui.Error(err.Error())
+			return 1
+		}
+	} else {
+		c.Ui.Output("-> Analyzer docker container found.")
+	}
+
+	c.Ui.Output("Cassiopeia setup has completed.")
+	c.Ui.Output("")
+
+	c.Ui.Output("Next steps below")
+	// Output environment values
+	dockerUrlArr := strings.Split(os.Getenv("DOCKER_HOST"), ":")
+	dockerIp := strings.TrimLeft(dockerUrlArr[1], "/")
+	c.Ui.Output("- Set values into environment values")
+	c.Ui.Info("  export CASSIOPEIA_TRANSIT=" + ct["CloudTransit"])
+	c.Ui.Info("  export CASSIOPEIA_ANALYZER_ENTRY=http://" + dockerIp + ":9200/_bulk")
+	c.Ui.Info("  export CASSIOPEIA_ANALYZER_URL=http://" + dockerIp + ":5601/")
+	c.Ui.Output("- Send data to edge transit.")
+	c.Ui.Output("    POST `http://funnel.soracom.io/`")
+	c.Ui.Output("    or `tcp://funnel.soracom.io:23080/`")
+	c.Ui.Output("    or `udp://funnel.soracom.io:23080/`")
+	c.Ui.Output("- Fetch from transit to analyzer.")
+	c.Ui.Output("    `cas pull`")
+	c.Ui.Output("    `cas fetch | some commands`")
+	c.Ui.Output("- Open analyzer.")
+	c.Ui.Output("    `cas open`")
 
 	return 0
 }
