@@ -244,36 +244,35 @@ func (c *SetupCommand) Run(args []string) int {
 			return 1
 		}
 		c.Ui.Info("-> EdgeTransit(SORACOM) Configuration: " + soracomName + " created.")
+		gc := []soracom.GroupConfig{
+			{
+				Key:   "enabled",
+				Value: "true",
+			}, {
+				Key:   "credentialsId",
+				Value: cred.CredentialId,
+			}, {
+				Key: "destination",
+				Value: soracom.FunnelDestinationConfig{
+					Provider:    "aws",
+					Service:     "kinesis",
+					ResourceUrl: "https://kinesis.ap-northeast-1.amazonaws.com/" + ct["CloudTransit"],
+				},
+			}, {
+				Key:   "contentType",
+				Value: "",
+			},
+		}
+		_, err = ac.UpdateGroupConfigurations(g.GroupID, "SoracomFunnel", gc)
+		if err != nil {
+			c.Ui.Error(err.Error())
+			return 1
+		}
+		c.Ui.Info("-> EdgeTransit Configuration updated.")
 	} else {
 		g = &groups[0]
 		c.Ui.Output("-> EdgeTransit(SORACOM) Configuration: already exists.")
 	}
-
-	gc := []soracom.GroupConfig{
-		{
-			Key:   "enabled",
-			Value: "true",
-		}, {
-			Key:   "credentialsId",
-			Value: cred.CredentialId,
-		}, {
-			Key: "destination",
-			Value: soracom.FunnelDestinationConfig{
-				Provider:    "aws",
-				Service:     "kinesis",
-				ResourceUrl: "https://kinesis.ap-northeast-1.amazonaws.com/" + ct["CloudTransit"],
-			},
-		}, {
-			Key:   "contentType",
-			Value: "",
-		},
-	}
-	_, err = ac.UpdateGroupConfigurations(g.GroupID, "SoracomFunnel", gc)
-	if err != nil {
-		c.Ui.Error(err.Error())
-		return 1
-	}
-	c.Ui.Info("-> EdgeTransit Configuration updated.")
 
 	// Setup Analyzer(Local/Docker)
 	client, err := docker.NewClientFromEnv()
@@ -281,7 +280,6 @@ func (c *SetupCommand) Run(args []string) int {
 		c.Ui.Error(err.Error())
 		return 1
 	}
-
 	// Pull Docker image if not exists.
 	lio := docker.ListImagesOptions{
 		Filter: analyzerDockerImage,
@@ -303,6 +301,7 @@ func (c *SetupCommand) Run(args []string) int {
 			c.Ui.Error(err.Error())
 			return 1
 		}
+		c.Ui.Info("-> Analyzer docker images pulled.")
 	} else {
 		c.Ui.Output("-> Analyzer docker image found.")
 	}
@@ -339,6 +338,7 @@ func (c *SetupCommand) Run(args []string) int {
 			c.Ui.Error(err.Error())
 			return 1
 		}
+		c.Ui.Info("-> Analyzer docker container created.")
 	} else {
 		c.Ui.Output("-> Analyzer docker container found.")
 	}
