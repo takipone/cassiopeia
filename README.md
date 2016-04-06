@@ -1,18 +1,26 @@
 # Cassiopeia
 
-a simple CLI tool to coordinate IoT backend.
-
 ## Description
+
+Cassiopeiaは非デベロッパが手軽に使えるようなIoTバックエンドを作る&繋げるCLIツールです。Cassiopeiaは以下で構成します。
+
+- Transit : デバイスからのデータを1日間の期限付きで蓄積します。EdgeTransit(SORACOM Funnel)とCloudTransit(Amazon Kinesis Streams)のセットで構成します。
+- Formatter : Transitからデータを取り出し、変換してAnalyzerにPOSTします。
+- Analyzer : データを保存し、分析するWeb画面を提供します。Dockerコンテナ上のElasticsearchとKibanaのセットで構成します。
 
 ## Usage
 
+1. AWSとSORACOMのアカウント情報を設定
+1. `cas setup`でコンポーネントを作成
+1. デバイスからFunnelにデータをPOST
+1. `cas pull`でFormatterを実行
+1. `cas open`でAnalyzerを表示
+
 ## Install
 
-To install, use `go get`:
-
-```bash
-$ go get -d github.com/takipone/cassiopeia
-```
+1. [Releases](releases/)ページから実行するOSに合った最新版のファイルをダウンロードします。
+1. ダウンロードしたファイルをPATHの通ったディレクトリにファイル名`cas`で配置します。
+1. ターミナルを開き、`cas help`を実行して動作を確認します。
 
 ## Contribution
 
@@ -26,4 +34,4 @@ $ go get -d github.com/takipone/cassiopeia
 
 ## Author
 
-[takipone](https://github.com/takipone)
+[@takipone](https://twitter.com/takipone)
